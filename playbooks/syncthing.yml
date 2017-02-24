@@ -1,0 +1,101 @@
+- hosts: syncthing
+  gather_facts: no
+
+  vars:
+    syncthing:
+      version: "0.14.23"
+      temp_dir: /storage/temp
+      install_dir: /storage/syncthing
+      home_dir: /storage/.config/syncthing
+      systemd_dir: /storage/.config/system.d
+      address: 0.0.0.0:8384
+      listen: 0.0.0.0:22000
+      localannounce: true
+      globalannounce: true
+      upnp: true
+
+  tasks:
+
+  - name: make dirs
+    file: path="{{ item }}" state=directory
+    with_items:
+      - "{{ syncthing.temp_dir }}"
+      - "{{ syncthing.home_dir }}"
+      - "{{ syncthing.install_dir }}"
+      - "{{ syncthing.install_dir }}/bin"
+
+  - name: download distr
+    get_url:
+      url: https://github.com/syncthing/syncthing/releases/download/v{{ syncthing.version }}/syncthing-linux-arm-v{{ syncthing.version }}.tar.gz
+      dest: "{{ syncthing.temp_dir }}"
+
+  - name: unpack distr
+    command: tar zxvf {{ syncthing.temp_dir }}/syncthing-linux-arm-v{{ syncthing.version }}.tar.gz -C {{ syncthing.temp_dir }}
+
+  - name: copy executable to home dir
+    shell: cp {{ syncthing.temp_dir }}/syncthing-linux-arm-v{{ syncthing.version }}/syncthing {{ syncthing.install_dir }}/bin/syncthing
+
+  - name: systemd | install service
+    copy:
+      dest: "{{ syncthing.systemd_dir }}/syncthing.service"
+      content: |
+        [Unit]
+        Description=Syncthing service
+        Requires=network-online.service
+        After=network-online.service
+        [Service]
+        User=root
+        Group=root
+        Environment=HOME=/storage
+        ExecStart={{ syncthing.install_dir }}/bin/syncthing -home="{{ syncthing.home_dir }}"
+        Restart=on-failure
+        SuccessExitStatus=3 4
+        RestartForceExitStatus=3 4
+        [Install]
+        WantedBy=multi-user.target
+    register: systemd_conf
+
+  - name: systemd | activate service
+    service: name=syncthing enabled=yes state=started
+
+  - name: systemd | reload service
+    service: name=syncthing state=reloaded
+    when: systemd_conf|changed
+
+  - name: waiting for configfile (takes some time)
+    wait_for: path={{ syncthing.home_dir }}/config.xml
+
+  - name: config.xml | webinterface address
+    lineinfile: dest={{ syncthing.home_dir }}/config.xml
+                regexp="<address>[^<]+</address>"
+                line="        <address>{{ syncthing.address }}</address>"
+    notify: restart syncthing
+
+  - name: config.xml | listen address
+    lineinfile: dest={{ syncthing.home_dir }}/config.xml
+                regexp="<listenAddress>[^<]+</listenAddress>"
+                line="        <listenAddress>{{ syncthing.listen }}</listenAddress>"
+    notify: restart syncthing
+
+  - name: config.xml | localAnnounceEnabled
+    lineinfile: dest={{ syncthing.home_dir }}/config.xml
+                regexp="<localAnnounceEnabled>[^<]+</localAnnounceEnabled>"
+                line="        <localAnnounceEnabled>{{ syncthing.localannounce|lower }}</localAnnounceEnabled>"
+    notify: restart syncthing
+
+  - name: config.xml | globalAnnounceEnabled
+    lineinfile: dest={{ syncthing.home_dir }}/config.xml
+                regexp="<globalAnnounceEnabled>[^<]+</globalAnnounceEnabled>"
+                line="        <globalAnnounceEnabled>{{ syncthing.globalannounce|lower }}</globalAnnounceEnabled>"
+    notify: restart syncthing
+
+  - name: config.xml | upnpEnabled
+    lineinfile: dest={{ syncthing.home_dir }}/config.xml
+                regexp="<upnpEnabled>[^<]+</upnpEnabled>"
+                line="        <upnpEnabled>{{ syncthing.upnp|lower }}</upnpEnabled>"
+    notify: restart syncthing
+
+  handlers:
+
+  - name: restart syncthing
+    command: systemctl restart syncthing
